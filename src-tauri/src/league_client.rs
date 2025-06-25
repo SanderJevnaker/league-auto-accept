@@ -1,4 +1,3 @@
-// src-tauri/src/league_client.rs
 use reqwest::Client;
 use serde_json::{Value, json};
 use std::fs;
@@ -7,8 +6,8 @@ use tokio::time::{sleep, Duration};
 use base64::{Engine as _, engine::general_purpose};
 use std::env;
 use tauri::Emitter;
+use rand::Rng;
 
-// Custom error type that implements Send + Sync
 #[derive(Debug)]
 pub struct LeagueError {
     message: String,
@@ -52,12 +51,12 @@ impl From<std::num::ParseIntError> for LeagueError {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct ChampSelectConfig {
     pub auto_pick_enabled: bool,
     pub auto_ban_enabled: bool,
-    pub pick_priority: Vec<String>, // Champion names in priority order
-    pub ban_priority: Vec<String>,  // Champion names to ban in priority order
+    pub pick_priority: Vec<String>,
+    pub ban_priority: Vec<String>,
 }
 
 impl Default for ChampSelectConfig {
@@ -87,7 +86,6 @@ pub struct LeagueClient {
 
 impl LeagueClient {
     pub async fn new() -> Result<Self, LeagueError> {
-        // Read League Client lockfile to get connection info
         let lockfile_path = Self::find_lockfile()?;
         let lockfile_content = fs::read_to_string(lockfile_path)?;
         
@@ -99,12 +97,10 @@ impl LeagueClient {
         let port: u16 = parts[2].parse()?;
         let password = parts[3];
         
-        // Create HTTP client that accepts self-signed certificates
         let client = Client::builder()
             .danger_accept_invalid_certs(true)
             .build()?;
         
-        // Create basic auth header
         let auth = format!("riot:{}", password);
         let auth_encoded = general_purpose::STANDARD.encode(auth.as_bytes());
         let auth_header = format!("Basic {}", auth_encoded);
@@ -118,19 +114,15 @@ impl LeagueClient {
     
     fn find_lockfile() -> Result<String, LeagueError> {
         let mut possible_paths = vec![
-            // Windows paths
             "C:\\Riot Games\\League of Legends\\lockfile".to_string(),
-            // Linux paths  
             format!("{}/.local/share/applications/league-of-legends/lockfile", env::var("HOME").unwrap_or_default()),
         ];
         
-        // macOS paths - check common locations
         if cfg!(target_os = "macos") {
             let home = env::var("HOME").unwrap_or_default();
             possible_paths.extend(vec![
                 "/Applications/League of Legends.app/Contents/LoL/lockfile".to_string(),
                 format!("{}/Applications/League of Legends.app/Contents/LoL/lockfile", home),
-                // Alternative path for Mac
                 format!("{}/Library/Application Support/com.riotgames.league_of_legends.live/lockfile", home),
             ]);
         }
@@ -205,7 +197,7 @@ impl LeagueClient {
             let json: Value = response.json().await?;
             Ok(Some(json))
         } else if response.status().as_u16() == 404 {
-            Ok(None) // Not in champ select
+            Ok(None)
         } else {
             Err("Failed to get champion select session".into())
         }
@@ -237,6 +229,9 @@ impl LeagueClient {
             "type": "pick"
         });
         
+        println!("DEBUG: Attempting to pick champion {} with action ID {}", champion_id, action_id);
+        println!("DEBUG: Payload: {}", payload);
+        
         let response = self.client
             .patch(&url)
             .header("Authorization", &self.auth_header)
@@ -245,7 +240,11 @@ impl LeagueClient {
             .send()
             .await?;
         
-        Ok(response.status().is_success())
+        let status = response.status();
+        let response_text = response.text().await.unwrap_or_default();
+        println!("DEBUG: Pick response status: {}, body: {}", status, response_text);
+        
+        Ok(status.is_success())
     }
     
     pub async fn ban_champion(&self, action_id: i64, champion_id: i64) -> Result<bool, LeagueError> {
@@ -257,6 +256,9 @@ impl LeagueClient {
             "type": "ban"
         });
         
+        println!("DEBUG: Attempting to ban champion {} with action ID {}", champion_id, action_id);
+        println!("DEBUG: Payload: {}", payload);
+        
         let response = self.client
             .patch(&url)
             .header("Authorization", &self.auth_header)
@@ -265,11 +267,14 @@ impl LeagueClient {
             .send()
             .await?;
         
-        Ok(response.status().is_success())
+        let status = response.status();
+        let response_text = response.text().await.unwrap_or_default();
+        println!("DEBUG: Ban response status: {}, body: {}", status, response_text);
+        
+        Ok(status.is_success())
     }
     
     pub async fn get_all_champion_names(&self) -> Result<Vec<String>, LeagueError> {
-        // Try to get champions from League Client API first
         let url = format!("{}/lol-game-data/assets/v1/champions.json", self.base_url);
         
         let response = self.client
@@ -278,7 +283,6 @@ impl LeagueClient {
             .send()
             .await;
         
-        // If API call succeeds, use the data
         if let Ok(response) = response {
             if response.status().is_success() {
                 if let Ok(json) = response.json::<Value>().await {
@@ -300,7 +304,6 @@ impl LeagueClient {
             }
         }
         
-        // Fallback to hardcoded list of all League champions (as of 2024)
         let mut champions: Vec<String> = vec![
             "Aatrox", "Ahri", "Akali", "Akshan", "Alistar", "Amumu", "Anivia", "Annie", 
             "Aphelios", "Ashe", "Aurelion Sol", "Azir", "Bard", "Bel'Veth", "Blitzcrank", 
@@ -331,7 +334,8 @@ impl LeagueClient {
     }
     
     pub async fn get_champion_id_by_name(&self, champion_name: &str) -> Result<Option<i64>, LeagueError> {
-        // Try to get from League Client API first
+        println!("DEBUG: Looking up champion ID for: {}", champion_name);
+        
         let url = format!("{}/lol-game-data/assets/v1/champions.json", self.base_url);
         
         let response = self.client
@@ -348,6 +352,7 @@ impl LeagueClient {
                             if let Some(name) = champion_data.get("name").and_then(|n| n.as_str()) {
                                 if name.to_lowercase() == champion_name.to_lowercase() {
                                     if let Some(id) = champion_data.get("id").and_then(|i| i.as_i64()) {
+                                        println!("DEBUG: Found champion {} with ID {} from API", name, id);
                                         return Ok(Some(id));
                                     }
                                 }
@@ -358,7 +363,7 @@ impl LeagueClient {
             }
         }
         
-        // Fallback: Use the complete champion ID mapping from the GitHub script
+        // Fallback: Use the complete champion ID mapping
         let champion_id = match champion_name.to_lowercase().as_str() {
             "annie" => 1,
             "olaf" => 2,
@@ -501,7 +506,6 @@ impl LeagueClient {
             "xayah" => 498,
             "ornn" => 516,
             "pyke" => 555,
-            // Additional champions not in the original script but in current League
             "neeko" => 518,
             "sylas" => 517,
             "senna" => 235,
@@ -521,16 +525,20 @@ impl LeagueClient {
             "bel'veth" => 200,
             "nilah" => 895,
             "k'sante" => 897,
-            _ => return Ok(None),
+            _ => {
+                println!("DEBUG: Champion {} not found in mapping", champion_name);
+                return Ok(None);
+            }
         };
         
+        println!("DEBUG: Found champion {} with ID {} from fallback mapping", champion_name, champion_id);
         Ok(Some(champion_id))
     }
 }
 
 pub struct AutoAcceptService {
-    client: LeagueClient,
-    config: ChampSelectConfig,
+    pub client: LeagueClient,
+    pub config: ChampSelectConfig,
 }
 
 impl AutoAcceptService {
@@ -543,12 +551,14 @@ impl AutoAcceptService {
     }
     
     pub fn update_config(&mut self, config: ChampSelectConfig) {
+        println!("DEBUG: Updating config: auto_pick={}, auto_ban={}, pick_priority={:?}, ban_priority={:?}", 
+                 config.auto_pick_enabled, config.auto_ban_enabled, config.pick_priority, config.ban_priority);
         self.config = config;
     }
     
     pub async fn start_monitoring(&mut self, app_handle: tauri::AppHandle) -> Result<(), LeagueError> {
+        println!("DEBUG: Starting monitoring service");
         loop {
-            // Check for ready check first
             match self.client.is_in_ready_check().await {
                 Ok(true) => {
                     println!("Ready check detected! Auto-accepting...");
@@ -568,14 +578,12 @@ impl AutoAcceptService {
                     }
                 }
                 Ok(false) => {
-                    // No ready check, check for champion select
                     if let Err(e) = self.handle_champion_select(&app_handle).await {
                         println!("Champion select error: {}", e);
                     }
                 }
                 Err(e) => {
                     println!("Error checking ready check status: {}", e);
-                    // Try to reconnect to League client
                     match LeagueClient::new().await {
                         Ok(new_client) => {
                             self.client = new_client;
@@ -583,22 +591,20 @@ impl AutoAcceptService {
                         }
                         Err(_) => {
                             let _ = app_handle.emit("league-disconnected", "League Client not found");
-                            // If we can't reconnect, stop the service
                             break;
                         }
                     }
                 }
             }
             
-            sleep(Duration::from_millis(1000)).await; // Check every second
+            sleep(Duration::from_millis(1000)).await;
         }
         
         Ok(())
     }
     
-    async fn handle_champion_select(&self, app_handle: &tauri::AppHandle) -> Result<(), LeagueError> {
+    pub async fn handle_champion_select(&self, app_handle: &tauri::AppHandle) -> Result<(), LeagueError> {
         if let Some(session) = self.client.get_champ_select_session().await? {
-            // Get our summoner ID from the session
             let local_player_cell_id = session.get("localPlayerCellId")
                 .and_then(|id| id.as_i64())
                 .unwrap_or(-1);
@@ -607,11 +613,25 @@ impl AutoAcceptService {
                 return Ok(());
             }
             
-            // Look through all action groups (different phases like ban, pick, etc.)
+            println!("DEBUG: In champion select, local player cell ID: {}", local_player_cell_id);
+            
+            if let Some(timer) = session.get("timer") {
+                if let Some(phase) = timer.get("phase") {
+                    println!("DEBUG: Current phase: {}", phase);
+                }
+                if let Some(time_left) = timer.get("timeLeftInPhase") {
+                    println!("DEBUG: Time left in phase: {}", time_left);
+                }
+            }
+            
             if let Some(actions) = session.get("actions").and_then(|a| a.as_array()) {
-                for action_group in actions {
+                println!("DEBUG: Found {} action groups", actions.len());
+                
+                for (group_index, action_group) in actions.iter().enumerate() {
                     if let Some(action_array) = action_group.as_array() {
-                        for action in action_array {
+                        println!("DEBUG: Action group {}: {} actions", group_index, action_array.len());
+                        
+                        for (action_index, action) in action_array.iter().enumerate() {
                             let actor_cell_id = action.get("actorCellId").and_then(|id| id.as_i64()).unwrap_or(-1);
                             let action_type = action.get("type").and_then(|t| t.as_str()).unwrap_or("");
                             let is_in_progress = action.get("isInProgress").and_then(|p| p.as_bool()).unwrap_or(false);
@@ -619,26 +639,50 @@ impl AutoAcceptService {
                             let action_id = action.get("id").and_then(|id| id.as_i64()).unwrap_or(-1);
                             let champion_id = action.get("championId").and_then(|id| id.as_i64()).unwrap_or(0);
                             
-                            // Only handle actions for the local player that are in progress and not completed
-                            // and don't already have a champion selected (championId == 0)
+                            println!("DEBUG: Action {}.{}: type={}, actor_cell_id={}, is_in_progress={}, completed={}, champion_id={}, action_id={}", 
+                                     group_index, action_index, action_type, actor_cell_id, is_in_progress, completed, champion_id, action_id);
+                            
                             if actor_cell_id == local_player_cell_id && is_in_progress && !completed && champion_id == 0 {
+                                println!("DEBUG: Found actionable {} for local player", action_type);
+                                
                                 match action_type {
                                     "ban" if self.config.auto_ban_enabled => {
+                                        println!("DEBUG: Attempting auto-ban");
                                         if let Err(e) = self.handle_auto_ban(action_id, app_handle).await {
                                             println!("Auto-ban error: {}", e);
                                         }
                                     }
                                     "pick" if self.config.auto_pick_enabled => {
+                                        println!("DEBUG: Attempting auto-pick");
                                         if let Err(e) = self.handle_auto_pick(action_id, app_handle).await {
                                             println!("Auto-pick error: {}", e);
                                         }
                                     }
-                                    _ => {}
+                                    "ban" => {
+                                        println!("DEBUG: Auto-ban is disabled");
+                                    }
+                                    "pick" => {
+                                        println!("DEBUG: Auto-pick is disabled");
+                                    }
+                                    _ => {
+                                        println!("DEBUG: Unhandled action type: {}", action_type);
+                                    }
+                                }
+                            } else {
+                                if actor_cell_id != local_player_cell_id {
+                                } else if !is_in_progress {
+                                    println!("DEBUG: Action not in progress");
+                                } else if completed {
+                                    println!("DEBUG: Action already completed");
+                                } else if champion_id != 0 {
+                                    println!("DEBUG: Champion already selected (ID: {})", champion_id);
                                 }
                             }
                         }
                     }
                 }
+            } else {
+                println!("DEBUG: No actions found in session");
             }
         }
         
@@ -646,8 +690,20 @@ impl AutoAcceptService {
     }
     
     async fn handle_auto_ban(&self, action_id: i64, app_handle: &tauri::AppHandle) -> Result<(), LeagueError> {
-        for champion_name in &self.config.ban_priority {
+        println!("DEBUG: Starting auto-ban with action ID: {}", action_id);
+        println!("DEBUG: Ban priority list: {:?}", self.config.ban_priority);
+        
+        let delay_seconds = rand::rng().random_range(1..=10);
+        println!("DEBUG: Waiting {} seconds before banning...", delay_seconds);
+        let _ = app_handle.emit("auto-action-delay", format!("Waiting {} seconds before banning...", delay_seconds));
+        sleep(Duration::from_secs(delay_seconds)).await;
+        
+        for (index, champion_name) in self.config.ban_priority.iter().enumerate() {
+            println!("DEBUG: Trying to ban champion {} (priority {})", champion_name, index + 1);
+            
             if let Some(champion_id) = self.client.get_champion_id_by_name(champion_name).await? {
+                println!("DEBUG: Champion {} has ID {}", champion_name, champion_id);
+                
                 match self.client.ban_champion(action_id, champion_id).await {
                     Ok(true) => {
                         println!("Successfully banned {}", champion_name);
@@ -655,8 +711,7 @@ impl AutoAcceptService {
                         return Ok(());
                     }
                     Ok(false) => {
-                        println!("Failed to ban {} (might be already banned)", champion_name);
-                        // Try next champion in priority list
+                        println!("Failed to ban {} (might be already banned or unavailable)", champion_name);
                         continue;
                     }
                     Err(e) => {
@@ -664,22 +719,39 @@ impl AutoAcceptService {
                         continue;
                     }
                 }
+            } else {
+                println!("DEBUG: Could not find champion ID for {}", champion_name);
             }
         }
         
+        println!("DEBUG: No champions from ban list were available to ban");
         let _ = app_handle.emit("champion-ban-failed", "No champions from ban list available");
         Ok(())
     }
     
     async fn handle_auto_pick(&self, action_id: i64, app_handle: &tauri::AppHandle) -> Result<(), LeagueError> {
-        let available_champions = self.client.get_available_champions().await?;
+        println!("DEBUG: Starting auto-pick with action ID: {}", action_id);
+        println!("DEBUG: Pick priority list: {:?}", self.config.pick_priority);
         
-        for champion_name in &self.config.pick_priority {
+        let delay_seconds = rand::rng().random_range(1..=10);
+        println!("DEBUG: Waiting {} seconds before picking...", delay_seconds);
+        let _ = app_handle.emit("auto-action-delay", format!("Waiting {} seconds before picking...", delay_seconds));
+        sleep(Duration::from_secs(delay_seconds)).await;
+        
+        let available_champions = self.client.get_available_champions().await?;
+        println!("DEBUG: Found {} available champions", available_champions.len());
+        
+        for (index, champion_name) in self.config.pick_priority.iter().enumerate() {
+            println!("DEBUG: Trying to pick champion {} (priority {})", champion_name, index + 1);
+            
             if let Some(champion_id) = self.client.get_champion_id_by_name(champion_name).await? {
-                // Check if we own this champion
+                println!("DEBUG: Champion {} has ID {}", champion_name, champion_id);
+                
                 let is_owned = available_champions.iter().any(|champ| {
                     champ.get("id").and_then(|id| id.as_i64()) == Some(champion_id)
                 });
+                
+                println!("DEBUG: Champion {} is owned: {}", champion_name, is_owned);
                 
                 if is_owned {
                     match self.client.pick_champion(action_id, champion_id).await {
@@ -689,7 +761,7 @@ impl AutoAcceptService {
                             return Ok(());
                         }
                         Ok(false) => {
-                            println!("Failed to pick {} (might be banned/picked)", champion_name);
+                            println!("Failed to pick {} (might be banned/picked by someone else)", champion_name);
                             continue;
                         }
                         Err(e) => {
@@ -697,10 +769,15 @@ impl AutoAcceptService {
                             continue;
                         }
                     }
+                } else {
+                    println!("DEBUG: Champion {} is not owned, skipping", champion_name);
                 }
+            } else {
+                println!("DEBUG: Could not find champion ID for {}", champion_name);
             }
         }
         
+        println!("DEBUG: No champions from pick list were available to pick");
         let _ = app_handle.emit("champion-pick-failed", "No champions from pick list available");
         Ok(())
     }
