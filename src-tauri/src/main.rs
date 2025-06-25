@@ -2,11 +2,12 @@
 
 mod league_client;
 
-use league_client::{AutoAcceptService, LeagueClient};
+use league_client::{AutoAcceptService, LeagueClient, ChampSelectConfig};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, State};
 
-type ServiceState = Arc<Mutex<bool>>;
+type ServiceState = Arc<Mutex<bool>>; 
+type ConfigState = Arc<Mutex<ChampSelectConfig>>;
 
 #[tauri::command]
 async fn connect_to_league() -> Result<String, String> {
@@ -28,8 +29,45 @@ async fn connect_to_league() -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn update_champ_select_config(
+    config_state: State<'_, ConfigState>,
+    auto_pick_enabled: bool,
+    auto_ban_enabled: bool,
+    pick_priority: Vec<String>,
+    ban_priority: Vec<String>,
+) -> Result<String, String> {
+    let mut config = config_state.lock().unwrap();
+    config.auto_pick_enabled = auto_pick_enabled;
+    config.auto_ban_enabled = auto_ban_enabled;
+    config.pick_priority = pick_priority;
+    config.ban_priority = ban_priority;
+    
+    Ok("Configuration updated successfully".to_string())
+}
+
+#[tauri::command]
+async fn get_champ_select_config(config_state: State<'_, ConfigState>) -> Result<ChampSelectConfig, String> {
+    let config = config_state.lock().unwrap();
+    Ok(config.clone())
+}
+
+#[tauri::command]
+async fn get_all_champions() -> Result<Vec<String>, String> {
+    match LeagueClient::new().await {
+        Ok(client) => {
+            match client.get_all_champion_names().await {
+                Ok(champions) => Ok(champions),
+                Err(e) => Err(format!("Failed to get champions: {}", e))
+            }
+        }
+        Err(e) => Err(format!("Failed to connect to League Client: {}", e))
+    }
+}
+
+#[tauri::command]
 async fn start_auto_accept(
     service_state: State<'_, ServiceState>,
+    config_state: State<'_, ConfigState>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
     {
@@ -39,8 +77,15 @@ async fn start_auto_accept(
         }
     }
     
+    let config = {
+        let config_guard = config_state.lock().unwrap();
+        config_guard.clone()
+    };
+    
     match AutoAcceptService::new().await {
         Ok(mut service) => {
+            service.update_config(config);
+            
             {
                 let mut is_running = service_state.lock().unwrap();
                 *is_running = true;
@@ -101,8 +146,12 @@ async fn manual_accept() -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(ServiceState::new(Mutex::new(false)))
+        .manage(ConfigState::new(Mutex::new(ChampSelectConfig::default())))
         .invoke_handler(tauri::generate_handler![
             connect_to_league,
+            update_champ_select_config,
+            get_champ_select_config,
+            get_all_champions,
             start_auto_accept,
             stop_auto_accept,
             is_auto_accept_running,
