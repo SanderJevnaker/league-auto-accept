@@ -43,6 +43,38 @@ function App() {
     });
   };
 
+  const hideWindow = async () => {
+    try {
+      await invoke('hide_window');
+    } catch (error) {
+      console.error('Failed to hide window:', error);
+    }
+  };
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const appElement = document.querySelector('.app');
+      if (appElement && !appElement.contains(event.target as Node)) {
+        hideWindow();
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    
+    const handleEscapeKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        hideWindow();
+      }
+    };
+    
+    document.addEventListener('keydown', handleEscapeKey);
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscapeKey);
+    };
+  }, []);
+
   useEffect(() => {
     const setupEventListeners = async () => {
       try {
@@ -76,6 +108,10 @@ function App() {
           addLogEntry(`⚠️ ${event.payload}`, 'error');
         });
 
+        const unlistenDelayNotice = await listen('auto-action-delay', (event) => {
+          addLogEntry(`⏱️ ${event.payload}`, 'info');
+        });
+
         const unlistenAppReady = await listen('app-ready', () => {
           addLogEntry('Application ready. Checking for League Client...', 'info');
           connectToLeague();
@@ -89,6 +125,7 @@ function App() {
           unlistenPickFailed();
           unlistenBanFailed();
           unlistenDisconnected();
+          unlistenDelayNotice();
           unlistenAppReady();
         };
       } catch (error) {
@@ -215,81 +252,102 @@ function App() {
   return (
     <div className="app">
       <div className="container">
-        <div className="settings-icon" onClick={() => setShowSettings(true)}>
-          ⚙️
-        </div>
-        
         <div className="header">
-          <h1>Lolytics Auto Accept</h1>
-          <p>Never miss a match again</p>
-        </div>
-
-        <div className="status-card">
-          <div className="status-indicator">
-            <div className={`status-dot ${isConnected ? 'connected' : ''}`}></div>
-            <strong>Connection Status</strong>
+          <div className="title-section">
+            <h1>Lolytics Auto Accept</h1>
+            <p>Never miss a match again</p>
           </div>
-          <div className="status-text">{connectionStatus}</div>
-        </div>
-
-        <div className="status-card">
-          <div className="status-indicator">
-            <div className={`status-dot ${isMonitoring ? 'monitoring' : ''}`}></div>
-            <strong>Auto-Accept Status</strong>
-          </div>
-          <div className="status-text">{monitoringStatus}</div>
-        </div>
-
-        {/* Champion Select Status */}
-        <div className="status-card">
-          <div className="status-indicator">
-            <div className={`status-dot ${config.auto_pick_enabled ? 'monitoring' : ''}`}></div>
-            <strong>Auto-Pick: {config.auto_pick_enabled ? 'Enabled' : 'Disabled'}</strong>
-          </div>
-          <div className="status-text">
-            {config.auto_pick_enabled ? `Priority: ${config.pick_priority.join(', ')}` : 'Configure in settings'}
+          <div className="window-controls">
+            <button className="settings-btn" onClick={() => setShowSettings(true)}>
+              ⚙️
+            </button>
+            <button className="close-btn" onClick={hideWindow}>
+              ×
+            </button>
           </div>
         </div>
 
-        <div className="status-card">
-          <div className="status-indicator">
-            <div className={`status-dot ${config.auto_ban_enabled ? 'monitoring' : ''}`}></div>
-            <strong>Auto-Ban: {config.auto_ban_enabled ? 'Enabled' : 'Disabled'}</strong>
-          </div>
-          <div className="status-text">
-            {config.auto_ban_enabled ? `Priority: ${config.ban_priority.join(', ')}` : 'Configure in settings'}
-          </div>
-        </div>
+        <div className="main-content">
+          <div className="status-section">
+            <div className="status-row">
+              <div className="status-card">
+                <div className="status-indicator">
+                  <div className={`status-dot ${isConnected ? 'connected' : ''}`}></div>
+                  <strong>League Client</strong>
+                </div>
+                <div className="status-text">{connectionStatus}</div>
+              </div>
 
-        <div className="button-group">
-          <button 
-            className="btn btn-secondary" 
-            onClick={connectToLeague}
-            disabled={isConnecting}
-          >
-            {isConnecting ? 'Connecting...' : isConnected ? 'Connected ✓' : 'Connect to League'}
-          </button>
-          
-          <button 
-            className={`btn ${isMonitoring ? 'btn-danger' : 'btn-primary'}`}
-            onClick={toggleAutoAccept}
-            disabled={!isConnected || isToggling}
-          >
-            {isToggling 
-              ? 'Starting...' 
-              : isMonitoring 
-                ? 'Disable Auto-Accept' 
-                : 'Enable Auto-Accept'
-            }
-          </button>
-          
-          <button 
-            className="btn btn-secondary"
-            onClick={manualAccept}
-            disabled={!isConnected || isManualAccepting}
-          >
-            {isManualAccepting ? 'Accepting...' : 'Manual Accept'}
-          </button>
+              <div className="status-card">
+                <div className="status-indicator">
+                  <div className={`status-dot ${isMonitoring ? 'monitoring' : ''}`}></div>
+                  <strong>Auto-Accept</strong>
+                </div>
+                <div className="status-text">{monitoringStatus}</div>
+              </div>
+            </div>
+
+            <div className="status-row">
+              <div className="status-card">
+                <div className="status-indicator">
+                  <div className={`status-dot ${config.auto_pick_enabled ? 'monitoring' : ''}`}></div>
+                  <strong>Auto-Pick</strong>
+                </div>
+                <div className="status-text">
+                  {config.auto_pick_enabled 
+                    ? `${config.pick_priority.slice(0, 2).join(', ')}...` 
+                    : 'Disabled'
+                  }
+                </div>
+              </div>
+
+              <div className="status-card">
+                <div className="status-indicator">
+                  <div className={`status-dot ${config.auto_ban_enabled ? 'monitoring' : ''}`}></div>
+                  <strong>Auto-Ban</strong>
+                </div>
+                <div className="status-text">
+                  {config.auto_ban_enabled 
+                    ? `${config.ban_priority.slice(0, 2).join(', ')}...` 
+                    : 'Disabled'
+                  }
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="control-panel">
+            <div className="button-group">
+              <button 
+                className="btn btn-secondary" 
+                onClick={connectToLeague}
+                disabled={isConnecting}
+              >
+                {isConnecting ? 'Connecting...' : isConnected ? 'Connected ✓' : 'Connect to League'}
+              </button>
+              
+              <button 
+                className={`btn ${isMonitoring ? 'btn-danger' : 'btn-primary'}`}
+                onClick={toggleAutoAccept}
+                disabled={!isConnected || isToggling}
+              >
+                {isToggling 
+                  ? 'Starting...' 
+                  : isMonitoring 
+                    ? 'Stop Auto-Accept' 
+                    : 'Start Auto-Accept'
+                }
+              </button>
+              
+              <button 
+                className="btn btn-secondary"
+                onClick={manualAccept}
+                disabled={!isConnected || isManualAccepting}
+              >
+                {isManualAccepting ? 'Accepting...' : 'Manual Accept'}
+              </button>
+            </div>
+          </div>
         </div>
 
         <div className="log-container">
@@ -302,7 +360,6 @@ function App() {
           </div>
         </div>
 
-        {/* Settings Modal */}
         {showSettings && (
           <div className="modal-overlay" onClick={() => setShowSettings(false)}>
             <div className="modal-content" onClick={(e) => e.stopPropagation()}>
@@ -346,7 +403,6 @@ function App() {
                   </div>
                 </div>
 
-                {/* Auto-Ban Settings */}
                 <div className="setting-section">
                   <div className="setting-header">
                     <label className="checkbox-container">

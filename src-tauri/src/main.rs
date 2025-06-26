@@ -4,7 +4,9 @@ mod league_client;
 
 use league_client::{AutoAcceptService, LeagueClient, ChampSelectConfig};
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, State};
+use tauri::{Emitter, State, Manager, LogicalPosition, LogicalSize};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 type ServiceState = Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>; 
 type ConfigState = Arc<Mutex<ChampSelectConfig>>;
@@ -207,6 +209,36 @@ async fn manual_accept() -> Result<String, String> {
     }
 }
 
+#[tauri::command]
+async fn show_window(app_handle: tauri::AppHandle) -> Result<(), tauri::Error> {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        
+        if let Ok(monitor) = window.current_monitor() {
+            if let Some(monitor) = monitor {
+                let monitor_size = monitor.size();
+                let window_size = LogicalSize::new(900, 580); // Updated to match new height
+                
+                let position = LogicalPosition::new(
+                    monitor_size.width as i32 - window_size.width - 100,
+                    50 
+                );
+                let _ = window.set_position(position);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn hide_window(app_handle: tauri::AppHandle) -> Result<(), tauri::Error> {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -220,14 +252,58 @@ pub fn run() {
             start_auto_accept,
             stop_auto_accept,
             is_auto_accept_running,
-            manual_accept
+            manual_accept,
+            show_window,
+            hide_window
         ])
         .setup(|app| {
+            let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            
+            let _tray = TrayIconBuilder::new()
+                .menu(&menu)
+                .tooltip("Lolytics Auto Accept")
+                .icon(app.default_window_icon().unwrap().clone())
+                .on_menu_event(|app, event| {
+                    match event.id.as_ref() {
+                        "show" => {
+                            let app_handle = app.clone();
+                            let _ = tauri::async_runtime::spawn(async move {
+                                let _ = show_window(app_handle).await;
+                            });
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    match event {
+                        TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } => {
+                            let app_handle = tray.app_handle().clone();
+                            let _ = tauri::async_runtime::spawn(async move {
+                                if let Some(window) = app_handle.get_webview_window("main") {
+                                    if window.is_visible().unwrap_or(false) {
+                                        let _ = hide_window(app_handle).await;
+                                    } else {
+                                        let _ = show_window(app_handle).await;
+                                    }
+                                }
+                            });
+                        }
+                        _ => {}
+                    }
+                })
+                .build(app)?;
+
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 let _ = app_handle.emit("app-ready", ());
             });
+            
             Ok(())
         })
         .run(tauri::generate_context!())
